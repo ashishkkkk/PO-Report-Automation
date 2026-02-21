@@ -85,7 +85,7 @@ public class Main implements Runnable {
             }
 
             process(Paths.get(inputPathStr), Paths.get(outputPathStr), sapConnectionName);
-            System.out.println("Automation compleet successfully");
+            System.out.println("Automation completed successfully");
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
             e.printStackTrace();

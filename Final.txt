@@ -66,7 +66,8 @@ public class Main implements Runnable {
                 if (!Files.exists(config)) throw new IllegalArgumentException("config file not found: " + config);
                 Yaml yaml = new Yaml();
                 try (InputStream in = Files.newInputStream(config)) {
-                    Map<String, Object> cfg = yaml.load(in);
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> cfg = (Map<String, Object>) yaml.load(in);
                     inputPathStr = cfg != null && cfg.get("input") != null ? cfg.get("input").toString() : null;
                     outputPathStr = cfg != null && cfg.get("output") != null ? cfg.get("output").toString() : "output.xlsx";
                     if (cfg != null && cfg.get("sap_connection") != null) sapConnectionName = cfg.get("sap_connection").toString();
@@ -105,11 +106,10 @@ public class Main implements Runnable {
         }
 
         System.out.println("Enter the full path to the raw data Excel file:");
-        try (Scanner scanner = new Scanner(System.in)) {
-            if (scanner.hasNextLine()) {
-                String path = scanner.nextLine().trim();
-                return path.replace("\"", "");
-            }
+        Scanner scanner = new Scanner(System.in);
+        if (scanner.hasNextLine()) {
+            String path = scanner.nextLine().trim();
+            return path.replace("\"", "");
         }
         return null;
     }
@@ -504,21 +504,16 @@ public class Main implements Runnable {
         }
         Cell hTotal = headerRow.createCell(spartNames.size() + 1); hTotal.setCellValue("Total"); hTotal.setCellStyle(headerStyle);
 
-        Map<String, Long> columnTotals = new LinkedHashMap<>();
-        for (String name : spartNames) columnTotals.put(name, 0L);
-
         // Collect all unique issues
-        Map<String, Map<String, Long>> allIssues = issueSummary;
-        allIssues.values().stream().flatMap(m -> m.keySet().stream()).distinct().forEach(issue -> {
+        issueSummary.values().stream().flatMap(m -> m.keySet().stream()).distinct().forEach(issue -> {
             Row dataRow = issueSummarySheet.createRow(issueSummarySheet.getLastRowNum() + 1);
             Cell cIssue = dataRow.createCell(0); cIssue.setCellValue(issue); cIssue.setCellStyle(dataStyle);
             long rowTotal = 0;
             for (int i = 0; i < spartNames.size(); i++) {
                 String spartName = spartNames.get(i);
-                long count = allIssues.get(spartName).getOrDefault(issue, 0L);
+                long count = issueSummary.get(spartName).getOrDefault(issue, 0L);
                 Cell cCount = dataRow.createCell(i + 1); cCount.setCellValue(count); cCount.setCellStyle(dataStyle);
                 rowTotal += count;
-                columnTotals.put(spartName, columnTotals.get(spartName) + count);
             }
             Cell cRowTotal = dataRow.createCell(spartNames.size() + 1); cRowTotal.setCellValue(rowTotal); cRowTotal.setCellStyle(dataStyle);
         });
@@ -732,7 +727,7 @@ public class Main implements Runnable {
 
                 // Read the exported file
                 if (exportFile.exists()) {
-                    try (BufferedReader br = new BufferedReader(new FileReader(exportFile))) {
+                    try (BufferedReader br = new BufferedReader(new FileReader(exportFile, java.nio.charset.Charset.defaultCharset()))) {
                         String line;
                         
                         while ((line = br.readLine()) != null) {

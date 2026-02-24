@@ -30,6 +30,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import org.apache.poi.ss.util.CellRangeAddress;
 import java.nio.file.Paths;
 import java.text.NumberFormat;
 import java.util.ArrayList;
@@ -44,6 +45,45 @@ public class Main implements Runnable {
 
     @Option(names = {"-c", "--config"}, description = "Path to YAML config", required = false)
     private Path config;
+
+    private static class AuartInfo {
+        final String subHeading;
+        final String item;
+
+        AuartInfo(String subHeading, String item) {
+            this.subHeading = subHeading;
+            this.item = item;
+        }
+    }
+
+    private static final Map<String, AuartInfo> AUART_MAPPING = new LinkedHashMap<>();
+    static {
+        // Vehicle
+        AUART_MAPPING.put("ZMTB", new AuartInfo("MTO CS", "Vehicle"));
+        AUART_MAPPING.put("ZMTO", new AuartInfo("MTO Dealer", "Vehicle"));
+        AUART_MAPPING.put("ZMTS", new AuartInfo("MTS Dealer & CS", "Vehicle"));
+        AUART_MAPPING.put("ZQTN", new AuartInfo("SVPO Dealer", "Vehicle"));
+        AUART_MAPPING.put("ZVBL", new AuartInfo("Vector PO Dealer", "Vehicle"));
+        AUART_MAPPING.put("ZUBB", new AuartInfo("Vector PO CS", "Vehicle"));
+        // Spares
+        AUART_MAPPING.put("FD", new AuartInfo("P2P PO Dealer", "SPARES"));
+        AUART_MAPPING.put("ZNPD", new AuartInfo("NPO PO Dealer", "SPARES"));
+        AUART_MAPPING.put("ZRSO", new AuartInfo("VOR PO Dealer", "SPARES"));
+        AUART_MAPPING.put("ZSPA", new AuartInfo("Spares PO Dealer & CS", "SPARES"));
+        AUART_MAPPING.put("ZBLK", new AuartInfo("Vector Spares PO Dealer", "SPARES"));
+        // Oil
+        AUART_MAPPING.put("ZOIL", new AuartInfo("Oil PO Dealer", "OIL"));
+        AUART_MAPPING.put("ZOBL", new AuartInfo("Vector Oil PO Dealer", "OIL"));
+        // Gear
+        AUART_MAPPING.put("ZACW", new AuartInfo("Gear PO Dealer", "GEAR"));
+        // GMA
+        AUART_MAPPING.put("ZMCA", new AuartInfo("GMA PO Dealer", "GMA"));
+        AUART_MAPPING.put("ZMTG", new AuartInfo("GMA PO Config Dealer", "GMA"));
+        AUART_MAPPING.put("ZMYG", new AuartInfo("GMA SNOP Order Dealer", "GMA"));
+        AUART_MAPPING.put("ZMCV", new AuartInfo("Vector GMA PO Dealer", "GMA"));
+        AUART_MAPPING.put("ZUBZ", new AuartInfo("Vector GMA PO CS", "GMA"));
+    }
+
 
     // Column Indexes (0-based)
     private static final int COL_DMSPONO = 6; // Column G
@@ -112,6 +152,23 @@ public class Main implements Runnable {
             return path.replace("\"", "");
         }
         return null;
+    }
+
+    private AuartInfo getAuartInfo(String auart, String spartName) {
+        if (auart == null || auart.trim().isEmpty()) {
+            return null;
+        }
+        auart = auart.trim();
+
+        if ("ZUB".equals(auart)) {
+            if ("Vehicle".equalsIgnoreCase(spartName)) return new AuartInfo("SVPO CS", "Vehicle");
+            if ("Spares".equalsIgnoreCase(spartName)) return new AuartInfo("Spares PO Dealer & CS", "SPARES");
+            if ("Oil".equalsIgnoreCase(spartName)) return new AuartInfo("Oil PO CS", "OIL");
+            if ("Gear".equalsIgnoreCase(spartName)) return new AuartInfo("Gear PO CS", "GEAR");
+            if ("GMA".equalsIgnoreCase(spartName)) return new AuartInfo("GMA PO CS", "GMA");
+        }
+
+        return AUART_MAPPING.get(auart);
     }
 
     public void process(Path inputPath, Path outputPath, String sapConnectionName) throws Exception {
@@ -362,6 +419,7 @@ public class Main implements Runnable {
             allFinalRecords.addAll(recordsWithSdn);
             allFinalRecords.addAll(processedWithoutSdn);
             createSpartReports(outputWorkbook, headers, allFinalRecords, headerStyle, dataStyle, totalStyle);
+            createAuartReport(outputWorkbook, headers, allFinalRecords, headerStyle, dataStyle, totalStyle);
 
             try {
                 try (FileOutputStream fos = new FileOutputStream(outputPath.toFile())) {
@@ -520,6 +578,116 @@ public class Main implements Runnable {
 
         for (int i = 0; i <= spartNames.size() + 1; i++) {
             issueSummarySheet.autoSizeColumn(i);
+        }
+    }
+
+    private void createAuartReport(SXSSFWorkbook workbook, List<String> headers, List<String[]> allFinalRecords, CellStyle headerStyle, CellStyle dataStyle, CellStyle totalStyle) {
+        System.out.println("Creating Auart-based summary report...");
+
+        int auartColIndex = -1;
+        for (int i = 0; i < headers.size(); i++) {
+            if ("AUART".equalsIgnoreCase(headers.get(i))) {
+                auartColIndex = i;
+                break;
+            }
+        }
+
+        if (auartColIndex == -1) {
+            System.out.println("WARNING: 'AUART' column not found in input file. Skipping 'Auart Remarks' sheet.");
+            return;
+        }
+
+        // Data structure: Item -> SubHeading -> SummaryData
+        Map<String, Map<String, SpartSummaryData>> auartSummary = new LinkedHashMap<>();
+
+        // Spart mapping for ZUB resolution
+        Map<String, String> spartMap = new LinkedHashMap<>();
+        spartMap.put("02", "Vehicle");
+        spartMap.put("03", "Spares");
+        spartMap.put("08", "Oil");
+        spartMap.put("04", "Gear");
+        spartMap.put("10", "GMA");
+
+        // Populate summary data
+        int finalRemarkIndex = headers.size() - 1;
+        for (String[] rowData : allFinalRecords) {
+            String auartCode = (rowData.length > auartColIndex && rowData[auartColIndex] != null) ? rowData[auartColIndex].trim() : "";
+            String spartCode = (rowData.length > COL_SPART && rowData[COL_SPART] != null) ? rowData[COL_SPART].trim() : "";
+
+            if (spartCode.endsWith(".0")) {
+                spartCode = spartCode.substring(0, spartCode.length() - 2);
+            }
+            String spartName = spartMap.get(spartCode);
+            if (spartName == null && spartCode.length() == 1) {
+                spartName = spartMap.get("0" + spartCode);
+            }
+
+            AuartInfo info = getAuartInfo(auartCode, spartName);
+
+            if (info != null) {
+                Map<String, SpartSummaryData> subHeadingMap = auartSummary.computeIfAbsent(info.item, k -> new LinkedHashMap<>());
+                SpartSummaryData summaryData = subHeadingMap.computeIfAbsent(info.subHeading, k -> new SpartSummaryData());
+
+                summaryData.totalCases++;
+                String finalRemark = (rowData.length > finalRemarkIndex && rowData[finalRemarkIndex] != null) ? rowData[finalRemarkIndex] : "Blank";
+                if ("Interfaced".equalsIgnoreCase(finalRemark)) {
+                    summaryData.interfacedCount++;
+                }
+            }
+        }
+
+        // --- Create "Auart Remarks" Sheet ---
+        Sheet sheet = workbook.createSheet("Auart Remarks");
+        ((SXSSFSheet) sheet).trackAllColumnsForAutoSizing();
+        int rowIndex = 0;
+
+        CellStyle itemHeaderStyle = workbook.createCellStyle();
+        itemHeaderStyle.cloneStyleFrom(headerStyle);
+        itemHeaderStyle.setFillForegroundColor(IndexedColors.GREY_40_PERCENT.getIndex());
+
+        NumberFormat percentFormat = NumberFormat.getPercentInstance();
+        percentFormat.setMinimumFractionDigits(1);
+
+        String[] subHeaders = {"Sub-Heading", "Total Cases", "Interfaced", "Pending for Interface", "Success Percentage"};
+
+        for (Map.Entry<String, Map<String, SpartSummaryData>> itemEntry : auartSummary.entrySet()) {
+            String item = itemEntry.getKey();
+            Map<String, SpartSummaryData> subHeadingMap = itemEntry.getValue();
+
+            Row itemHeaderRow = sheet.createRow(rowIndex++);
+            for (int i = 0; i < subHeaders.length; i++) {
+                Cell cell = itemHeaderRow.createCell(i);
+                if (i == 0) cell.setCellValue(item);
+                cell.setCellStyle(itemHeaderStyle);
+            }
+            sheet.addMergedRegion(new CellRangeAddress(rowIndex - 1, rowIndex - 1, 0, subHeaders.length - 1));
+
+            Row headerRow = sheet.createRow(rowIndex++);
+            for (int i = 0; i < subHeaders.length; i++) {
+                Cell cell = headerRow.createCell(i);
+                cell.setCellValue(subHeaders[i]);
+                cell.setCellStyle(headerStyle);
+            }
+
+            long itemTotalCases = 0, itemTotalInterfaced = 0;
+
+            for (Map.Entry<String, SpartSummaryData> subHeadingEntry : subHeadingMap.entrySet()) {
+                Row dataRow = sheet.createRow(rowIndex++);
+                SpartSummaryData data = subHeadingEntry.getValue();
+                long pending = data.totalCases - data.interfacedCount;
+                double successRate = (data.totalCases > 0) ? (double) data.interfacedCount / data.totalCases : 0;
+
+                Cell c0 = dataRow.createCell(0); c0.setCellValue(subHeadingEntry.getKey()); c0.setCellStyle(dataStyle);
+                Cell c1 = dataRow.createCell(1); c1.setCellValue(data.totalCases); c1.setCellStyle(dataStyle);
+                Cell c2 = dataRow.createCell(2); c2.setCellValue(data.interfacedCount); c2.setCellStyle(dataStyle);
+                Cell c3 = dataRow.createCell(3); c3.setCellValue(pending); c3.setCellStyle(dataStyle);
+                Cell c4 = dataRow.createCell(4); c4.setCellValue(percentFormat.format(successRate)); c4.setCellStyle(dataStyle);
+            }
+            rowIndex++; // Add a blank row for spacing
+        }
+
+        for (int i = 0; i < subHeaders.length; i++) {
+            sheet.autoSizeColumn(i);
         }
     }
 
